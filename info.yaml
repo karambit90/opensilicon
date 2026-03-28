@@ -1,9 +1,9 @@
 # Tiny Tapeout project information
 project:
-  title:        "V-SPACE Demo Hardware Stopwatch"
-  author:       "Advaittej"
+  title:        "mASTI BEFORE EMG SENSOR"
+  author:       "KARAMBIT90"
   discord:      "" 
-  description:  "1-second interval stopwatch with start/pause toggled via input switch."
+  description:  "MULTI CHANNEL EMG FILTER IC BEFORE THE STANDARD EMG SENSOR "
   language:     "Verilog" 
   clock_hz:     10000000 
 
@@ -11,7 +11,7 @@ project:
   tiles: "1x1" 
 
   # Your top module name must start with "tt_um_". 
-  top_module:  "tt_um_advaittej_stopwatch"
+  top_module:  "tt_um_emg_processor"
 
   # List your project's source files here.
   source_files:
@@ -20,24 +20,23 @@ project:
 # The pinout of your project. Leave unused pins blank. DO NOT delete or add any pins.
 pinout:
   # Inputs
-  ui[0]: "Start / Pause Button"
-  ui[1]: ""
-  ui[2]: ""
-  ui[3]: ""
-  ui[4]: ""
+  ui[0]: "EMG Channel 0"
+  ui[2]: "EMG Channel 1"
+  ui[3]: "EMG Channel 2"
+  ui[4]: "EMG Channel 3"
   ui[5]: ""
   ui[6]: ""
   ui[7]: ""
 
   # Outputs
-  uo[0]: "Segment A"
-  uo[1]: "Segment B"
-  uo[2]: "Segment C"
-  uo[3]: "Segment D"
-  uo[4]: "Segment E"
-  uo[5]: "Segment F"
-  uo[6]: "Segment G"
-  uo[7]: "DP(Always Off)"
+  uo[0]: "Valid Pulse"
+  uo[1]: "Event Counter Bit 0"
+  uo[2]: "Event Counter Bit 1"
+  uo[3]: "Event Counter Bit 2"
+  uo[4]: "Event Counter Bit 3"
+  uo[5]: ""
+  uo[6]: ""
+  uo[7]: ""
 
   # Bidirectional pins
   uio[0]: ""
