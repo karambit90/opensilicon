@@ -1,65 +1,54 @@
 `default_nettype none
 
 module tt_um_emg_processor #(
-    parameter THRESHOLD = 4'd6,
+    parameter THRESHOLD      = 4'd6,
     parameter DURATION_LIMIT = 4'd5
 )(
-    input  wire [7:0] ui_in,    // Dedicated inputs
-    output wire [7:0] uo_out,   // Dedicated outputs
-    input  wire [7:0] uio_in,   // IOs (unused)
-    output wire [7:0] uio_out,  
-    output wire [7:0] uio_oe,   
-    input  wire       ena,      // always 1
-    input  wire       clk,      
-    input  wire       rst_n     
+    input  wire [7:0] ui_in,
+    output wire [7:0] uo_out,
+    input  wire [7:0] uio_in,
+    output wire [7:0] uio_out,
+    output wire [7:0] uio_oe,
+    input  wire       ena,
+    input  wire       clk,
+    input  wire       rst_n
 );
 
-    // ----------------------------
-    // Unused IOs
-    // ----------------------------
     assign uio_out = 8'b0;
     assign uio_oe  = 8'b0;
 
-    // ----------------------------
-    // Reset
-    // ----------------------------
+    // Suppress unused input warnings
+    wire _unused = &{ena, uio_in, ui_in[7:4], 1'b0};
+
     wire reset = ~rst_n;
+    wire [3:0] emg_in = ui_in[3:0];
 
-    // ----------------------------
-    // Input mapping
-    // ----------------------------
-    wire [3:0] emg_in = ui_in[3:0];  // 4-bit EMG input
-
-    // ----------------------------
-    // Output mapping
-    // ----------------------------
     reg valid_pulse;
     reg [3:0] event_counter;
 
-    assign uo_out[0]   = valid_pulse;     // main output
-    assign uo_out[4:1] = event_counter;   // debug: event count
-    assign uo_out[7:5] = 3'b000;          // unused
+    assign uo_out[0]   = valid_pulse;
+    assign uo_out[4:1] = event_counter;
+    assign uo_out[7:5] = 3'b000;
 
     // ----------------------------
-    // 1. SHIFT REGISTER (FILTER)
+    // 1. SHIFT REGISTER (flattened)
     // ----------------------------
-    reg [3:0] shift_reg [0:3];
+    reg [3:0] sr0, sr1, sr2, sr3;
 
-    integer i;
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            for (i = 0; i < 4; i = i + 1)
-                shift_reg[i] <= 0;
+            sr0 <= 4'd0; sr1 <= 4'd0;
+            sr2 <= 4'd0; sr3 <= 4'd0;
         end else begin
-            shift_reg[0] <= emg_in;
-            shift_reg[1] <= shift_reg[0];
-            shift_reg[2] <= shift_reg[1];
-            shift_reg[3] <= shift_reg[2];
+            sr0 <= emg_in;
+            sr1 <= sr0;
+            sr2 <= sr1;
+            sr3 <= sr2;
         end
     end
 
-    wire [5:0] sum = shift_reg[0] + shift_reg[1] + shift_reg[2] + shift_reg[3];
-    wire [3:0] filtered = sum >> 2;
+    wire [5:0] sum      = sr0 + sr1 + sr2 + sr3;
+    wire [3:0] filtered = sum[5:2];   // divide by 4 (right shift 2)
 
     // ----------------------------
     // 2. THRESHOLD DETECTION
@@ -72,47 +61,44 @@ module tt_um_emg_processor #(
     reg [3:0] duration_counter;
 
     always @(posedge clk or posedge reset) begin
-        if (reset) begin
-            duration_counter <= 0;
-        end else if (above_threshold) begin
-            duration_counter <= duration_counter + 1;
-        end else begin
-            duration_counter <= 0;
-        end
+        if (reset)
+            duration_counter <= 4'd0;
+        else if (above_threshold)
+            duration_counter <= duration_counter + 4'd1;
+        else
+            duration_counter <= 4'd0;
     end
 
     wire valid_event = (duration_counter >= DURATION_LIMIT);
 
     // ----------------------------
-    // 4. PATTERN COUNTER
+    // 4. EVENT COUNTER
     // ----------------------------
     always @(posedge clk or posedge reset) begin
-        if (reset) begin
-            event_counter <= 0;
-        end else if (valid_event) begin
-            event_counter <= event_counter + 1;
-        end
+        if (reset)
+            event_counter <= 4'd0;
+        else if (valid_event)
+            event_counter <= event_counter + 4'd1;
     end
 
     // ----------------------------
-    // 5. FSM CONTROL
+    // 5. FSM
     // ----------------------------
-    reg [2:0] state;
+    reg [1:0] state;   // only 4 states needed — use 2 bits
 
-    localparam IDLE     = 3'd0;
-    localparam MONITOR  = 3'd1;
-    localparam VALIDATE = 3'd2;
-    localparam CONFIRM  = 3'd3;
+    localparam IDLE     = 2'd0;
+    localparam MONITOR  = 2'd1;
+    localparam VALIDATE = 2'd2;
+    localparam CONFIRM  = 2'd3;
 
     always @(posedge clk or posedge reset) begin
         if (reset) begin
-            state <= IDLE;
-            valid_pulse <= 0;
+            state       <= IDLE;
+            valid_pulse <= 1'b0;
         end else begin
             case (state)
-
                 IDLE: begin
-                    valid_pulse <= 0;
+                    valid_pulse <= 1'b0;
                     if (above_threshold)
                         state <= MONITOR;
                 end
@@ -132,12 +118,11 @@ module tt_um_emg_processor #(
                 end
 
                 CONFIRM: begin
-                    valid_pulse <= 1;
-                    state <= IDLE;
+                    valid_pulse <= 1'b1;
+                    state       <= IDLE;
                 end
 
                 default: state <= IDLE;
-
             endcase
         end
     end
