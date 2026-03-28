@@ -1,55 +1,123 @@
-`default_nettype none
-`timescale 1ns / 1ps
+`timescale 1ns/1ps
 
-module tb ();
+module tb_emg_processor;
 
-  // Dump the signals to a FST file.
-  initial begin
-    $display("Force dumping data now");
-    $dumpfile("tb.fst");
-    $dumpvars(0, tb);
-    #1; // The template includes this 1ns delay to ensure simulator stability
-  end
+    // DUT signals
+    reg  [7:0] ui_in;
+    wire [7:0] uo_out;
+    reg  [7:0] uio_in;
+    wire [7:0] uio_out;
+    wire [7:0] uio_oe;
+    reg  ena;
+    reg  clk;
+    reg  rst_n;
 
-  // Wire up the inputs and outputs:
-  reg clk;
-  reg rst_n;
-  reg ena;
-  reg [7:0] ui_in;
-  reg [7:0] uio_in;
-  wire [7:0] uo_out;
-  wire [7:0] uio_out;
-  wire [7:0] uio_oe;
-
-  // Template's way of defining power wires for Gate Level simulation
-`ifdef GL_TEST
-  wire VPWR = 1'b1;
-  wire VGND = 1'b0;
-`endif
-
-// Instantiate OUR module. Hide the parameter during Gate Level tests.
-    tt_um_advaittej_stopwatch 
-`ifndef GL_TEST
-    #(
-        .CLOCKS_PER_SECOND(24'd9) // 10 clocks = 1 second for fast testing
-    )
-`endif
-    user_project (
-        
-        // Include power ports for the Gate Level test:
-`ifdef GL_TEST
-        .VPWR(VPWR),
-        .VGND(VGND),
-`endif
-
-        .ui_in  (ui_in),    // Dedicated inputs
-        .uo_out (uo_out),   // Dedicated outputs
-        .uio_in (uio_in),   // IOs: Input path
-        .uio_out(uio_out),  // IOs: Output path
-        .uio_oe (uio_oe),   // IOs: Enable path (active high: 0=input, 1=output)
-        .ena    (ena),      // enable - goes high when design is selected
-        .clk    (clk),      // clock
-        .rst_n  (rst_n)     // not reset
+    // Instantiate DUT
+    tt_um_emg_processor #(
+        .THRESHOLD(4'd6),
+        .DURATION_LIMIT(4'd3)   // LOWER for fast simulation
+    ) dut (
+        .ui_in(ui_in),
+        .uo_out(uo_out),
+        .uio_in(uio_in),
+        .uio_out(uio_out),
+        .uio_oe(uio_oe),
+        .ena(ena),
+        .clk(clk),
+        .rst_n(rst_n)
     );
+
+    // Clock generation (10ns period)
+    always #5 clk = ~clk;
+
+    // Task: apply EMG input
+    task set_emg(input [3:0] val);
+        begin
+            ui_in[3:0] = val;
+        end
+    endtask
+
+    initial begin
+        // Init
+        clk = 0;
+        rst_n = 0;
+        ena = 1;
+        ui_in = 0;
+        uio_in = 0;
+
+        // Dump waves (for GTKWave)
+        $dumpfile("wave.vcd");
+        $dumpvars(0, tb_emg_processor);
+
+        // ----------------------------
+        // RESET
+        // ----------------------------
+        #20;
+        rst_n = 1;
+        $display("Reset done");
+
+        // ----------------------------
+        // TEST 1: Noise (should NOT trigger)
+        // ----------------------------
+        $display("TEST 1: Noise");
+
+        repeat (5) begin
+            set_emg($random % 5);  // low random noise
+            #10;
+        end
+
+        // ----------------------------
+        // TEST 2: Short spike (should NOT trigger)
+        // ----------------------------
+        $display("TEST 2: Short spike");
+
+        set_emg(4'd10); // above threshold
+        #10;
+        set_emg(4'd0);
+        #20;
+
+        // ----------------------------
+        // TEST 3: Valid contraction (should trigger)
+        // ----------------------------
+        $display("TEST 3: Valid contraction");
+
+        repeat (5) begin
+            set_emg(4'd10);  // sustained high
+            #10;
+        end
+
+        set_emg(4'd0);
+        #20;
+
+        // ----------------------------
+        // TEST 4: Multiple contractions
+        // ----------------------------
+        $display("TEST 4: Repeated contractions");
+
+        repeat (3) begin
+            repeat (5) begin
+                set_emg(4'd10);
+                #10;
+            end
+            set_emg(0);
+            #30;
+        end
+
+        // ----------------------------
+        // END
+        // ----------------------------
+        $display("Simulation finished");
+        #50;
+        $finish;
+    end
+
+    // Monitor signals
+    initial begin
+        $monitor("Time=%0t | EMG=%d | Pulse=%b | Count=%d",
+                 $time,
+                 ui_in[3:0],
+                 uo_out[0],
+                 uo_out[4:1]);
+    end
 
 endmodule
