@@ -21,9 +21,10 @@ project:
 pinout:
   # Inputs
   ui[0]: "EMG Channel 0"
-  ui[2]: "EMG Channel 1"
-  ui[3]: "EMG Channel 2"
-  ui[4]: "EMG Channel 3"
+  ui[1]: "EMG Channel 1"
+  ui[2]: "EMG Channel 2"
+  ui[3]: "EMG Channel 3"
+  ui[4]: "none"
   ui[5]: "none"
   ui[6]: "none"
   ui[7]: "none"
