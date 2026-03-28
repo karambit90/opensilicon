@@ -1,87 +1,128 @@
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, FallingEdge
+from cocotb.triggers import ClockCycles, RisingEdge
 
-# REFERENCE MODEL (Golden Vector Generator)
-class StopwatchModel:
-    def __init__(self):
-        self.digit = 0
-        self.running = False
-        # 7-segment hex values for 0-9
-        self.segments = [
-            0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110, 
-            0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111
-        ]
+
+# REFERENCE MODEL (Golden Vector)
+
+class EMGProcessorModel:
+    def __init__(self, threshold=6, duration_limit=3):
+        self.threshold = threshold
+        self.duration_limit = duration_limit
+        self.duration_counter = 0
+        self.event_counter = 0
+        self.valid_pulse = 0
 
     def reset(self):
-        self.digit = 0
-        self.running = False
+        self.duration_counter = 0
+        self.event_counter = 0
+        self.valid_pulse = 0
 
-    def set_run_state(self, state):
-        self.running = bool(state)
+    def process_sample(self, emg_value):
+        # Threshold detection
+        above_threshold = emg_value > self.threshold
 
-    def tick(self):
-        if self.running:
-            if self.digit == 9:
-                self.digit = 0
-            else:
-                self.digit += 1
+        # Temporal validation
+        if above_threshold:
+            self.duration_counter += 1
+        else:
+            self.duration_counter = 0
 
-    def get_expected_output(self):
-        return self.segments[self.digit]
+        valid_event = self.duration_counter >= self.duration_limit
+
+        # FSM simulation
+        if valid_event and not self.valid_pulse:
+            self.valid_pulse = 1
+            self.event_counter += 1
+        else:
+            self.valid_pulse = 0
 
 # TEST SUITE
 @cocotb.test()
-async def test_stopwatch_golden_vectors(dut):
-    dut._log.info("Starting Golden Vector Stopwatch Test")
-    
-    # Initialize software reference model
-    model = StopwatchModel()
+async def test_emg_processor_golden_vectors(dut):
+    dut._log.info("Starting Golden Vector EMG Processor Test")
 
-    # Set the clock period (Using 10us to match the official TT template)
-    clock = Clock(dut.clk, 10, unit="us")
+    # Clock setup
+    clock = Clock(dut.clk, 10, unit="us")  # 10us period
     cocotb.start_soon(clock.start())
 
-    # Phase 1: Reset Sequence
-    dut._log.info("Resetting design")
+    # Initialize DUT
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
     dut.rst_n.value = 0
     await ClockCycles(dut.clk, 10)
     dut.rst_n.value = 1
-    model.reset()
     await ClockCycles(dut.clk, 2)
-    
-    assert int(dut.uo_out.value) == model.get_expected_output(), "Failed at Reset!"
 
-    # Phase 2: Counting Sequence
-    dut._log.info("Pressing Start Button")
-    dut.ui_in.value = 1
-    model.set_run_state(True)
+    # Initialize software reference model
+    model = EMGProcessorModel(threshold=6, duration_limit=3)
+    model.reset()
 
-    # Test 15 'seconds' (Our tb.v overrides 1 second to equal 10 clocks)
-    for simulated_second in range(15):
-        await ClockCycles(dut.clk, 10)
-        await FallingEdge(dut.clk)
-        model.tick()
-        
-        expected = model.get_expected_output()
-        actual = int(dut.uo_out.value)
-        
-        dut._log.info(f"Sec {simulated_second + 1}: Expected {bin(expected)}, Got {bin(actual)}")
-        assert actual == expected, f"Mismatch at second {simulated_second + 1}!"
+   
+    # TEST 1: Noise (should NOT trigger, nonononono bad manners)
+  
+    dut._log.info("TEST 1: Noise")
+    for t in range(5):
+        noise = t % 5  # 0-4: below threshold
+        dut.ui_in.value = noise
+        await RisingEdge(dut.clk)
+        model.process_sample(noise)
 
-    # Phase 3: Pause Sequence
-    dut._log.info("Pressing Pause Button")
+        expected_pulse = model.valid_pulse
+        actual_pulse = int(dut.uo_out.value & 0x1)
+        assert actual_pulse == expected_pulse, f"Noise test failed at t={t}"
+
+    # TEST 2: Short spike (should NOT trigger, nonononon again bad manners)
+   
+    dut._log.info("TEST 2: Short spike")
+    dut.ui_in.value = 10  # above threshold
+    await ClockCycles(dut.clk, 1)
+    model.process_sample(10)
     dut.ui_in.value = 0
-    model.set_run_state(False)
+    await ClockCycles(dut.clk, 2)
+    model.process_sample(0)
+
+    expected_pulse = model.valid_pulse
+    actual_pulse = int(dut.uo_out.value & 0x1)
+    assert actual_pulse == expected_pulse, "Short spike incorrectly triggered"
+
+   
+    # TEST 3: Valid contraction (should trigger, yes good boy)
+
+    dut._log.info("TEST 3: Valid contraction")
+    for t in range(5):
+        dut.ui_in.value = 10  # sustained above threshold
+        await RisingEdge(dut.clk)
+        model.process_sample(10)
+
+        expected_pulse = model.valid_pulse
+        actual_pulse = int(dut.uo_out.value & 0x1)
+        assert actual_pulse == expected_pulse, f"Valid contraction failed at t={t}"
+
     
-    # Wait 5 'seconds' to ensure it doesn't count while paused
-    for _ in range(5):
-        await ClockCycles(dut.clk, 10)
-        await FallingEdge(dut.clk)
-        model.tick()
-        
-    assert int(dut.uo_out.value) == model.get_expected_output(), "Pause failed! HW kept counting."
-    dut._log.info("All Golden Vector tests passed perfectly!")
+    # TEST 4: Repeated contractions, now it is fun
+ 
+    dut._log.info("TEST 4: Repeated contractions")
+    for rep in range(3):
+        # Sustained high
+        for t in range(4):
+            dut.ui_in.value = 10
+            await RisingEdge(dut.clk)
+            model.process_sample(10)
+
+            expected_pulse = model.valid_pulse
+            actual_pulse = int(dut.uo_out.value & 0x1)
+            assert actual_pulse == expected_pulse, f"Rep {rep} failed at t={t}"
+
+        # Low signal between contractions
+        for t in range(2):
+            dut.ui_in.value = 0
+            await RisingEdge(dut.clk)
+            model.process_sample(0)
+
+            expected_pulse = model.valid_pulse
+            actual_pulse = int(dut.uo_out.value & 0x1)
+            assert actual_pulse == expected_pulse, f"Rep {rep} low phase failed at t={t}"
+
+    dut._log.info("All Golden Vector tests passed for EMG processor")
