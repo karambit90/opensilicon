@@ -1,86 +1,145 @@
 `default_nettype none
 
-module tt_um_advaittej_stopwatch #(
-    parameter CLOCKS_PER_SECOND = 24'd9_999_999
+module tt_um_emg_processor #(
+    parameter THRESHOLD = 4'd6,
+    parameter DURATION_LIMIT = 4'd5
 )(
-    // DO NOT CHANGE THESE NAMES!!
-    // The factory tools require these exact port definitions
     input  wire [7:0] ui_in,    // Dedicated inputs
     output wire [7:0] uo_out,   // Dedicated outputs
-    input  wire [7:0] uio_in,   // IOs: Input path
-    output wire [7:0] uio_out,  // IOs: Output path
-    output wire [7:0] uio_oe,   // IOs: Enable path (active high: 0=input, 1=output)
-    input  wire       ena,      // always 1 when the design is powered
-    input  wire       clk,      // clock
-    input  wire       rst_n     // reset_n - low to reset
+    input  wire [7:0] uio_in,   // IOs (unused)
+    output wire [7:0] uio_out,  
+    output wire [7:0] uio_oe,   
+    input  wire       ena,      // always 1
+    input  wire       clk,      
+    input  wire       rst_n     
 );
 
-    // Intuitive aliasing ie translating TT to readable names
-    assign uio_out = 8'b0; // Tie off unused pins to prevent errors
+    // ----------------------------
+    // Unused IOs
+    // ----------------------------
+    assign uio_out = 8'b0;
     assign uio_oe  = 8'b0;
 
-    // Inverting active-low reset so 1 means reset now for our logic
-    wire reset_active = !rst_n;       
-    
-    // Pin 0 of input block is button
-    wire start_pause_btn = ui_in[0];  
-    
-    // Internal wire for 7-segment data
-    wire [6:0] led_segments;          
+    // ----------------------------
+    // Reset
+    // ----------------------------
+    wire reset = ~rst_n;
 
-    // Drive physical output pins with our internal data
-    assign uo_out[6:0] = led_segments; 
-    assign uo_out[7]   = 1'b0; // Decimal point off
+    // ----------------------------
+    // Input mapping
+    // ----------------------------
+    wire [3:0] emg_in = ui_in[3:0];  // 4-bit EMG input
 
-    // CLOCK DIVIDER
-    reg [23:0] clock_counter;
-    wire one_second_pulse = (clock_counter == CLOCKS_PER_SECOND);
+    // ----------------------------
+    // Output mapping
+    // ----------------------------
+    reg valid_pulse;
+    reg [3:0] event_counter;
 
-    always @(posedge clk or posedge reset_active) begin
-        if (reset_active) begin
-            clock_counter <= 0;
-        end else if (start_pause_btn) begin
-            if (one_second_pulse) begin
-                clock_counter <= 0;
-            end else begin
-                clock_counter <= clock_counter + 1;
-            end
+    assign uo_out[0]   = valid_pulse;     // main output
+    assign uo_out[4:1] = event_counter;   // debug: event count
+    assign uo_out[7:5] = 3'b000;          // unused
+
+    // ----------------------------
+    // 1. SHIFT REGISTER (FILTER)
+    // ----------------------------
+    reg [3:0] shift_reg [0:3];
+
+    integer i;
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            for (i = 0; i < 4; i = i + 1)
+                shift_reg[i] <= 0;
+        end else begin
+            shift_reg[0] <= emg_in;
+            shift_reg[1] <= shift_reg[0];
+            shift_reg[2] <= shift_reg[1];
+            shift_reg[3] <= shift_reg[2];
         end
     end
 
-    // DIGIT COUNTER: counts 0 to 9
-    reg [3:0] current_digit;
+    wire [5:0] sum = shift_reg[0] + shift_reg[1] + shift_reg[2] + shift_reg[3];
+    wire [3:0] filtered = sum >> 2;
 
-    always @(posedge clk or posedge reset_active) begin
-        if (reset_active) begin
-            current_digit <= 0;
-        end else if (start_pause_btn && one_second_pulse) begin
-            if (current_digit == 9) begin
-                current_digit <= 0;
-            end else begin
-                current_digit <= current_digit + 1;
-            end
+    // ----------------------------
+    // 2. THRESHOLD DETECTION
+    // ----------------------------
+    wire above_threshold = (filtered > THRESHOLD);
+
+    // ----------------------------
+    // 3. TEMPORAL VALIDATION
+    // ----------------------------
+    reg [3:0] duration_counter;
+
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            duration_counter <= 0;
+        end else if (above_threshold) begin
+            duration_counter <= duration_counter + 1;
+        end else begin
+            duration_counter <= 0;
         end
     end
 
-    // 7-SEGMENT DECODER: translates to LEDs
-    reg [6:0] decoded_leds;
-    assign led_segments = decoded_leds;
+    wire valid_event = (duration_counter >= DURATION_LIMIT);
 
-    always @(*) begin
-        case (current_digit)
-            4'd0: decoded_leds = 7'b0111111;
-            4'd1: decoded_leds = 7'b0000110;
-            4'd2: decoded_leds = 7'b1011011;
-            4'd3: decoded_leds = 7'b1001111;
-            4'd4: decoded_leds = 7'b1100110;
-            4'd5: decoded_leds = 7'b1101101;
-            4'd6: decoded_leds = 7'b1111101;
-            4'd7: decoded_leds = 7'b0000111;
-            4'd8: decoded_leds = 7'b1111111;
-            4'd9: decoded_leds = 7'b1101111;
-            default: decoded_leds = 7'b0000000;
-        endcase
+    // ----------------------------
+    // 4. PATTERN COUNTER
+    // ----------------------------
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            event_counter <= 0;
+        end else if (valid_event) begin
+            event_counter <= event_counter + 1;
+        end
+    end
+
+    // ----------------------------
+    // 5. FSM CONTROL
+    // ----------------------------
+    reg [2:0] state;
+
+    localparam IDLE     = 3'd0;
+    localparam MONITOR  = 3'd1;
+    localparam VALIDATE = 3'd2;
+    localparam CONFIRM  = 3'd3;
+
+    always @(posedge clk or posedge reset) begin
+        if (reset) begin
+            state <= IDLE;
+            valid_pulse <= 0;
+        end else begin
+            case (state)
+
+                IDLE: begin
+                    valid_pulse <= 0;
+                    if (above_threshold)
+                        state <= MONITOR;
+                end
+
+                MONITOR: begin
+                    if (above_threshold)
+                        state <= VALIDATE;
+                    else
+                        state <= IDLE;
+                end
+
+                VALIDATE: begin
+                    if (valid_event)
+                        state <= CONFIRM;
+                    else if (!above_threshold)
+                        state <= IDLE;
+                end
+
+                CONFIRM: begin
+                    valid_pulse <= 1;
+                    state <= IDLE;
+                end
+
+                default: state <= IDLE;
+
+            endcase
+        end
     end
 
 endmodule
